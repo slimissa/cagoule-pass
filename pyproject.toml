@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cagoule-pass"
+version = "1.0.0"
+description = "Gestionnaire de mots de passe chiffré avec CAGOULE"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Slim Issa", email = "slim.issa@example.com"}]
+requires-python = ">=3.9"
+keywords = ["password", "manager", "encryption", "cagoule", "security", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "cagoule>=1.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-timeout>=2.0.0",
+]
+
+[project.scripts]
+cagoule-pass = "cagoule_pass.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/slimissa/CAGOULE"
+Repository = "https://github.com/slimissa/cagoule-pass"
+
+[tool.setuptools]
+packages = ["cagoule_pass"]
+
+[tool.setuptools.package-data]
+cagoule_pass = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["cagoule_pass"]
+omit = ["tests/*", "cagoule_pass/cli.py"]
