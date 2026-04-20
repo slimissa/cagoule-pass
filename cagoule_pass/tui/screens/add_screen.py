@@ -1,7 +1,9 @@
+from textual.binding import Binding
 # tui/screens/add_screen.py
 from textual import on
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.app import ComposeResult
 from textual.widgets import Button, Input, Label, Select, Switch, TabbedContent, TabPane
 
 from ...entry import Entry

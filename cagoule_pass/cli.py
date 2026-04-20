@@ -838,12 +838,23 @@ def cmd_tui(args, cfg: CagouleConfig) -> int:
     try:
         from .tui import launch_tui
     except ImportError as e:
-        _err("Impossible de charger l'interface TUI.")
+        _err(f"Impossible de charger l'interface TUI: {e}")
         _info("Installez textual : pip install textual")
+        return 1
+    except Exception as e:
+        _err(f"Erreur inattendue lors de l'import: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
 
     vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
-    launch_tui(vault_dir)
+    try:
+        launch_tui(vault_dir)
+    except Exception as e:
+        _err(f"Erreur lors du lancement de la TUI: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
     return 0
 
 

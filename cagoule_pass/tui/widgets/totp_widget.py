@@ -1,19 +1,14 @@
-"""
-totp_widget.py — Widget TOTP live pour l'interface TUI.
-
-Affiche le code TOTP courant avec barre de progression et
-alerte visuelle dans les 5 dernières secondes.
-"""
+"""totp_widget.py — Widget TOTP live pour l'interface TUI."""
 
 from textual.reactive import reactive
 from textual.widgets import Static, Label, ProgressBar
-from textual import on
+from textual.app import ComposeResult
 
 
 class TOTPWidget(Static):
     """
     Widget live pour l'affichage du code TOTP avec barre de progression.
-    Se met à jour chaque seconde via un worker asyncio.
+    Se met à jour chaque seconde.
     """
 
     CSS = """
@@ -40,15 +35,15 @@ class TOTPWidget(Static):
     }
     """
 
-    code     = reactive("------")
-    seconds  = reactive(30)
+    code = reactive("------")
+    seconds = reactive(30)
     progress = reactive(1.0)
 
     def __init__(self, totp_entry) -> None:
         super().__init__()
         self.totp_entry = totp_entry
 
-    def compose(self) -> None:
+    def compose(self) -> ComposeResult:
         yield Label("Code TOTP (2FA)", id="totp-label")
         yield Label(self.code, id="totp-code")
         yield ProgressBar(
@@ -62,7 +57,7 @@ class TOTPWidget(Static):
         self.set_interval(1.0, self._refresh_code)
 
     def _refresh_code(self) -> None:
-        from ...totp import generate_code, time_remaining
+        from ....totp import generate_code, time_remaining
 
         self.code = generate_code(self.totp_entry)
         remaining = time_remaining(self.totp_entry)
@@ -74,7 +69,6 @@ class TOTPWidget(Static):
         code_lbl = self.query_one("#totp-code", Label)
         code_lbl.update(f"{self.code[:3]} {self.code[3:]}")
 
-        # Couleur d'urgence
         if remaining <= 5:
             code_lbl.add_class("danger")
         else:

@@ -2,6 +2,7 @@
 from textual import on
 from textual.containers import Center, Container
 from textual.screen import ModalScreen
+from textual.app import ComposeResult
 from textual.widgets import Button, Label, Static
 
 
