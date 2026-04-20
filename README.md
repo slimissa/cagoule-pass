@@ -1,11 +1,16 @@
-# cagoule-pass
+# 🔐 cagoule-pass
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
+[![PyPI](https://img.shields.io/pypi/v/cagoule-pass)](https://pypi.org/project/cagoule-pass/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-138%20passing-brightgreen)](tests/)
+[![CI](https://img.shields.io/github/actions/workflow/status/slimissa/cagoule-pass/pypi-publish.yml)](https://github.com/slimissa/cagoule-pass/actions)
 
-**Gestionnaire de mots de passe en ligne de commande, chiffré avec CAGOULE.**
+**Gestionnaire de mots de passe CLI chiffré avec [CAGOULE](https://github.com/slimissa/CAGOULE).**
 
-Chaque coffre est un fichier `.cgl1` chiffré par CAGOULE (ChaCha20-Poly1305 + couche algébrique Z/pZ). Le mot de passe maître ne quitte jamais votre machine.
+Chaque coffre est un fichier `.cgl1` chiffré par CAGOULE (ChaCha20-Poly1305 + couche algébrique Z/pZ + Argon2id KDF). Support natif du TOTP/2FA (RFC 6238), des clés SSH (Ed25519/RSA-4096) et d'une interface TUI complète.
+
+> ⚠️ **Avertissement** : CAGOULE est une implémentation cryptographique académique originale, non auditée par des tiers. Ne pas utiliser en production sur des systèmes critiques sans audit de sécurité indépendant.
 
 ---
 
@@ -15,72 +20,340 @@ Chaque coffre est un fichier `.cgl1` chiffré par CAGOULE (ChaCha20-Poly1305 + c
 pip install cagoule-pass
 ```
 
+**Avec support QR codes** :
+```bash
+pip install "cagoule-pass[qr]"
+```
+
+**Depuis les sources** :
+```bash
+git clone https://github.com/slimissa/cagoule-pass
+cd cagoule-pass
+pip install -e ".[dev]"
+```
+
+---
+
 ## Démarrage rapide
 
 ```bash
 # 1. Créer un coffre
 cagoule-pass init
 
-# 2. Ajouter une entrée (mot de passe généré automatiquement)
-cagoule-pass add github -u monuser --generate --length 20 --symbols
+# 2. Ajouter une entrée avec mot de passe généré
+cagoule-pass add github -u slimissa --generate --length 24 --symbols
 
 # 3. Récupérer une entrée
 cagoule-pass get github --show
 
-# 4. Copier le mot de passe dans le presse-papier
+# 4. Copier dans le presse-papier (auto-effacement 30s)
 cagoule-pass copy github
 
-# 5. Lister toutes les entrées
-cagoule-pass list
+# 5. Lancer l'interface TUI
+cagoule-pass tui
 ```
 
 ---
 
 ## Commandes
 
+### Gestion du coffre
+
 | Commande | Description |
 |----------|-------------|
-| `init` | Créer un nouveau coffre |
+| `init` | Créer un nouveau coffre chiffré |
+| `info` | Informations sur le coffre |
+| `passwd` | Changer le mot de passe maître |
+| `export <fichier>` | Exporter en JSON (avertissement mots de passe en clair) |
+| `import <fichier>` | Importer depuis un JSON exporté |
+| `config` | Afficher la configuration active |
+
+### Gestion des entrées
+
+| Commande | Description |
+|----------|-------------|
 | `add <service>` | Ajouter une entrée |
 | `get <service>` | Afficher une entrée |
-| `copy <service>` | Copier le mot de passe |
-| `list` | Lister toutes les entrées |
-| `search <query>` | Rechercher |
 | `edit <service>` | Modifier une entrée |
 | `remove <service>` | Supprimer une entrée |
+| `list [--tag TAG]` | Lister toutes les entrées |
+| `search <query>` | Rechercher (service, username, URL, tags) |
+| `copy <service>` | Copier dans le presse-papier |
 | `generate` | Générer un mot de passe seul |
-| `passwd` | Changer le mot de passe maître |
-| `export <fichier>` | Exporter en JSON |
-| `import <fichier>` | Importer depuis JSON |
-| `info` | Informations sur le coffre |
 
-## Options communes
+### TOTP / 2FA
+
+| Commande | Description |
+|----------|-------------|
+| `totp-add <service>` | Configurer le TOTP pour un service |
+| `totp-code <service>` | Afficher le code TOTP live |
+| `totp-uri <service>` | Afficher l'URI `otpauth://` (QR code) |
+
+### Clés SSH
+
+| Commande | Description |
+|----------|-------------|
+| `ssh-gen <service>` | Générer une paire de clés SSH |
+| `ssh-add <service>` | Importer une clé SSH existante |
+| `ssh-pub <service>` | Afficher la clé publique |
+| `ssh-export <service>` | Exporter vers `~/.ssh/` |
+
+### Interface
+
+| Commande | Description |
+|----------|-------------|
+| `tui` | Lancer l'interface TUI (Textual) |
+
+---
+
+## Exemples
+
+### Mots de passe
 
 ```bash
-# Dossier personnalisé
-cagoule-pass --dir /chemin/vault list
+# Ajouter avec options complètes
+cagoule-pass add aws \
+  -u admin@mycompany.com \
+  --generate --length 32 --symbols --no-ambiguous \
+  --url https://console.aws.amazon.com \
+  --tags "cloud,pro"
 
-# Générer un mot de passe fort
-cagoule-pass generate --length 24 --symbols --no-ambiguous --copy
+# Copier sans auto-effacement
+cagoule-pass copy aws --no-clear
 
-# Ajouter avec URL et tags
-cagoule-pass add github -u user --generate --url https://github.com --tags "dev,pro"
+# Rechercher
+cagoule-pass search aws
+cagoule-pass list --tag pro
+
+# Générer un mot de passe seul
+cagoule-pass generate --length 20 --symbols --copy
 ```
+
+### TOTP / 2FA
+
+```bash
+# Ajouter via URI otpauth:// (depuis votre application 2FA)
+cagoule-pass totp-add github \
+  --uri "otpauth://totp/GitHub:slimissa?secret=JBSWY3DPEHPK3PXP&issuer=GitHub"
+
+# Ajouter manuellement (secret Base32 fourni par le service)
+cagoule-pass totp-add github --secret JBSWY3DPEHPK3PXP --issuer GitHub
+
+# Code live avec barre de progression
+cagoule-pass totp-code github
+
+# Code unique (pour scripts)
+cagoule-pass totp-code github --once
+
+# Code unique + copie automatique
+cagoule-pass totp-code github --once --copy
+
+# Exporter l'URI (pour migrer vers une autre appli)
+cagoule-pass totp-uri github
+```
+
+### Clés SSH
+
+```bash
+# Générer une clé Ed25519 (recommandé)
+cagoule-pass ssh-gen myserver --algorithm Ed25519 --comment "user@laptop"
+
+# Générer RSA-4096
+cagoule-pass ssh-gen legacyserver --algorithm RSA-4096
+
+# Importer une clé existante
+cagoule-pass ssh-add myserver --key-file ~/.ssh/id_ed25519
+
+# Afficher la clé publique (à copier dans authorized_keys)
+cagoule-pass ssh-pub myserver
+
+# Copier la clé publique dans le presse-papier
+cagoule-pass ssh-pub myserver --copy
+
+# Exporter vers ~/.ssh/
+cagoule-pass ssh-export myserver --output-dir ~/.ssh --filename id_myserver
+```
+
+### Configuration TOML
+
+Le fichier `~/.cagoule-pass/config.toml` est créé automatiquement :
+
+```toml
+[vault]
+dir = "~/.cagoule-pass"
+
+[clipboard]
+clear_after_seconds = 30   # 0 = désactivé
+no_clear = false
+
+[generator]
+default_length = 16
+use_symbols = false
+no_ambiguous = false
+```
+
+Afficher la configuration active :
+```bash
+cagoule-pass config
+```
+
+---
+
+## Interface TUI
+
+```bash
+cagoule-pass tui
+```
+
+**Raccourcis clavier :**
+
+| Touche | Action |
+|--------|--------|
+| `/` | Rechercher en temps réel |
+| `Enter` | Ouvrir l'entrée sélectionnée |
+| `n` | Nouvelle entrée |
+| `r` | Rafraîchir le coffre |
+| `?` | Aide |
+| `q` | Quitter |
+| `Escape` | Fermer / effacer recherche |
+
+L'écran de détail affiche le code TOTP en temps réel avec barre de progression si un secret est configuré.
+
+---
 
 ## Sécurité
 
-- Chiffrement : **CAGOULE v1.5+ (CGL1)** — ChaCha20-Poly1305 + CBC interne sur Z/pZ
-- KDF : **Argon2id** (t=3, m=64MB) — résistant aux attaques par GPU
-- Stockage : `~/.cagoule-pass/vault.cgl1` — un seul fichier chiffré
-- Écriture **atomique** (fichier temporaire + rename) — pas de corruption partielle
-- Mot de passe maître : jamais stocké, jamais logué
+### Pipeline cryptographique
 
-> ⚠️ Basé sur CAGOULE qui est à usage académique. Ne pas utiliser en production sans audit.
+```
+Mot de passe maître
+        │
+        ▼
+   Argon2id KDF
+   (t=3, m=64MB, p=1)
+        │
+        ▼
+   Clé dérivée 256 bits
+        │
+        ├── Couche CAGOULE (CBC sur Z/pZ)
+        │
+        ▼
+   ChaCha20-Poly1305 AEAD
+        │
+        ▼
+   Fichier .cgl1
+```
+
+### Propriétés
+
+- **Chiffrement** : ChaCha20-Poly1305 (256 bits, AEAD)
+- **KDF** : Argon2id (résistant GPU/ASIC, paramètres OWASP)
+- **Diffusion** : Couche algébrique originale CAGOULE sur Z/pZ
+- **Génération** : `os.urandom()` avec rejection sampling (pas de modulo bias)
+- **TOTP** : RFC 6238 implémenté en stdlib pure (hmac + hashlib)
+- **SSH** : Clés stockées chiffrées dans le coffre CGL1
+- **Presse-papier** : Auto-effacement après 30s (configurable)
+- **Écriture** : Atomique (fichier temporaire + rename POSIX)
+- **Mot de passe maître** : Jamais stocké, jamais loggé
+
+---
 
 ## Structure du coffre
 
 ```
 ~/.cagoule-pass/
-├── vault.cgl1     ← coffre chiffré (format CGL1)
-└── config.json    ← métadonnées non-sensibles (version, date)
+├── vault.cgl1      ← coffre chiffré (format CGL1)
+└── config.toml     ← configuration (créé automatiquement)
 ```
+
+### Format d'une entrée
+
+```json
+{
+  "service":  "github",
+  "username": "slimissa",
+  "password": "••••••••",
+  "url":      "https://github.com",
+  "notes":    "",
+  "tags":     ["dev", "pro"],
+  "totp":     { "secret": "••••", "issuer": "GitHub", "digits": 6, "period": 30 },
+  "ssh_key":  { "algorithm": "Ed25519", "fingerprint": "SHA256:...", "..." : "..." },
+  "created":  "2026-04-20T10:00:00Z",
+  "updated":  "2026-04-20T12:15:00Z"
+}
+```
+
+---
+
+## Tests
+
+```bash
+# Lancer tous les tests
+pytest tests/ -v
+
+# Avec couverture
+pytest tests/ --cov=cagoule_pass --cov-report=term-missing
+```
+
+**Couverture :**
+
+| Module | Tests | Périmètre |
+|--------|-------|-----------|
+| `test_entry.py` | 11 | Modèle, sérialisation, timestamps |
+| `test_generator.py` | 14 | CSPRNG, entropie, force |
+| `test_vault.py` | 24 | Init, CRUD, persistance, passwd |
+| `test_config.py` | 15 | TOML load, defaults, corrompu |
+| `test_totp.py` | 30 | RFC 6238, SHA1/256/512, URI |
+| `test_ssh.py` | 10 | Ed25519, RSA, export, chmod |
+| Autres | 34 | CLI, TUI, intégration, QR |
+| **Total** | **138** | **100 % passants** |
+
+---
+
+## Dépendances
+
+| Package | Version | Usage |
+|---------|---------|-------|
+| `cagoule` | ≥ 1.5.0 | Chiffrement CGL1 (obligatoire) |
+| `cryptography` | ≥ 40.0.0 | Génération clés SSH |
+| `textual` | ≥ 0.50.0 | Interface TUI |
+| `tomli` | ≥ 1.1.0 | TOML parser (Python < 3.11 uniquement) |
+| `qrcode` | ≥ 7.0 | QR codes TOTP (optionnel) |
+
+---
+
+## Développement
+
+```bash
+# Installer en mode développement
+pip install -e ".[dev]"
+
+# Lancer les tests
+pytest
+
+# Générer la documentation
+pdoc cagoule_pass -o docs/
+
+# Builder le package
+python -m build
+twine check dist/*
+```
+
+---
+
+## Licence
+
+MIT — voir [LICENSE](LICENSE)
+
+---
+
+## Auteur
+
+**Slim Issa** — GitHub : [@slimissa](https://github.com/slimissa)  
+Kairouan, Tunisie — Avril 2026
+
+Partie de l'écosystème **QuantOS** — une plateforme de calcul intégrant la finance quantitative à chaque couche.
+
+---
+
+*cagoule-pass — parce que vos mots de passe méritent une vraie cryptographie.*
