@@ -1,26 +1,27 @@
 """
-cli.py — Interface ligne de commande cagoule-pass v1.2.
+cli.py — Interface ligne de commande cagoule-pass v1.5.
 
-Nouveautés v1.2 :
-    - Option --version / -V
-    - Auto-effacement presse-papier (configurable via TOML)
-    - Chargement config.toml (~/.cagoule-pass/config.toml)
+Nouveautés v1.5 :
+    - Gestion TOTP (2FA) : ajout, affichage, QR code
+    - Gestion SSH Keys : génération, import, export, agent
+    - Interface TUI (Textual) : cagoule-pass tui
 
-Commandes :
-    cagoule-pass init                          Créer un nouveau coffre
-    cagoule-pass add <service>                 Ajouter une entrée
-    cagoule-pass get <service>                 Afficher une entrée
-    cagoule-pass copy <service>                Copier le mot de passe
-    cagoule-pass list [--tag <tag>]            Lister les entrées
-    cagoule-pass search <query>                Rechercher
-    cagoule-pass edit <service>                Modifier une entrée
-    cagoule-pass remove <service>              Supprimer une entrée
-    cagoule-pass generate                      Générer un mot de passe
-    cagoule-pass passwd                        Changer le mot de passe maître
-    cagoule-pass export <fichier>              Exporter en JSON
-    cagoule-pass import <fichier>              Importer depuis JSON
-    cagoule-pass info                          Infos sur le coffre
-    cagoule-pass config                        Afficher la configuration active
+Commandes existantes (v1.2) :
+    init, add, get, copy, list, search, edit, remove, generate,
+    passwd, export, import, info, config
+
+Nouvelles commandes v1.5 :
+    totp add <service> --secret <BASE32> [--issuer ISSUER] [--account ACCOUNT]
+    totp show <service>                    # Affiche le code TOTP actuel
+    totp qr <service>                      # Génère QR code
+    ssh add <name> --generate [--algo Ed25519|RSA-4096] [--comment COMMENT]
+    ssh import <name> --key <path>         # Importe clé privée existante
+    ssh export <name> [--output-dir DIR]   # Exporte vers ~/.ssh/
+    ssh list                               # Liste les clés SSH
+    ssh show <name>                        # Affiche détails clé SSH
+    ssh add-to-agent <name>                # Ajoute à ssh-agent
+    ssh remove-from-agent <fingerprint>    # Supprime de ssh-agent
+    tui                                    # Lance l'interface TUI
 """
 
 from __future__ import annotations
@@ -100,7 +101,6 @@ def _clipboard_copy(text: str) -> bool:
     """Copie dans le presse-papier (cross-platform, best-effort)."""
     import subprocess
     try:
-        # Linux (xclip ou xsel ou wl-copy)
         for cmd in [["xclip", "-selection", "clipboard"],
                     ["xsel", "--clipboard", "--input"],
                     ["wl-copy"]]:
@@ -111,14 +111,12 @@ def _clipboard_copy(text: str) -> bool:
                     return True
             except FileNotFoundError:
                 continue
-        # macOS
         try:
             p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
             p.communicate(text.encode("utf-8"))
             return p.returncode == 0
         except FileNotFoundError:
             pass
-        # Windows
         try:
             p = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True)
             p.communicate(text.encode("utf-8"))
@@ -130,51 +128,32 @@ def _clipboard_copy(text: str) -> bool:
     return False
 
 
-def _schedule_clipboard_clear(delay_seconds: int) -> None:
-    """
-    Lance l'effacement du presse-papier après `delay_seconds` secondes.
-
-    Utilise un thread daemon : le timer ne bloque pas la sortie du process
-    et est annulé automatiquement si le process se termine avant l'expiration.
-    """
+def _schedule_clipboard_clear(delay_seconds: int) -> threading.Thread:
     def _clear() -> None:
         time.sleep(delay_seconds)
         _clipboard_copy("")
-
     t = threading.Thread(target=_clear, daemon=True)
     t.start()
-    # Attendre pour que le timer s'exécute même si main() se termine rapidement
-    # On garde le process vivant via t.join() côté appelant si nécessaire
     return t
 
 
 def _copy_with_autoclear(text: str, cfg: CagouleConfig, no_clear_flag: bool = False) -> bool:
-    """
-    Copie `text` dans le presse-papier, puis planifie l'auto-effacement.
-
-    La priorité CLI (--no-clear) surpasse la config TOML.
-
-    Returns:
-        True si la copie a réussi.
-    """
     if not _clipboard_copy(text):
         return False
 
-    # Résolution des flags : CLI > config TOML
     skip_clear = no_clear_flag or cfg.clipboard.no_clear
     delay = cfg.clipboard.clear_after_seconds
 
     if not skip_clear and delay > 0:
         _info(f"Auto-effacement du presse-papier dans {delay}s.")
         t = _schedule_clipboard_clear(delay)
-        t.join()  # Bloquer jusqu'à effacement pour que le process reste actif
+        t.join()
     else:
         _info("Presse-papier non effacé automatiquement (--no-clear ou config).")
-
     return True
 
 
-# ─── Commandes ────────────────────────────────────────────────────────────────
+# ─── Commandes existantes (v1.2) ─────────────────────────────────────────────
 
 def cmd_init(args, cfg: CagouleConfig) -> int:
     vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
@@ -205,17 +184,16 @@ def cmd_add(args, cfg: CagouleConfig) -> int:
     service = args.service.strip().lower()
 
     username = args.username or input("  Username (optionnel) : ").strip()
-    url      = args.url      or input("  URL (optionnel) : ").strip()
-    notes    = args.notes    or input("  Notes (optionnel) : ").strip()
-    tags     = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
+    url = args.url or input("  URL (optionnel) : ").strip()
+    notes = args.notes or input("  Notes (optionnel) : ").strip()
+    tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
 
     if args.password:
         pwd = args.password
     elif args.generate:
-        # Appliquer les défauts de la config si non spécifiés en CLI
-        length  = args.length   if args.length != 16 else cfg.generator.default_length
-        symbols = args.symbols  or cfg.generator.use_symbols
-        no_amb  = args.no_ambiguous or cfg.generator.no_ambiguous
+        length = args.length if args.length != 16 else cfg.generator.default_length
+        symbols = args.symbols or cfg.generator.use_symbols
+        no_amb = args.no_ambiguous or cfg.generator.no_ambiguous
         pwd = generate(
             length=length,
             use_upper=not args.no_upper,
@@ -272,7 +250,7 @@ def cmd_copy(args, cfg: CagouleConfig) -> int:
         _err(str(e))
         return 1
 
-    text  = entry.username if args.username else entry.password
+    text = entry.username if args.username else entry.password
     label = "username" if args.username else "mot de passe"
 
     if not text:
@@ -424,10 +402,9 @@ def cmd_remove(args, cfg: CagouleConfig) -> int:
 
 
 def cmd_generate(args, cfg: CagouleConfig) -> int:
-    # Priorité CLI > config TOML
-    length  = args.length  if args.length != 16 else cfg.generator.default_length
+    length = args.length if args.length != 16 else cfg.generator.default_length
     symbols = args.symbols or cfg.generator.use_symbols
-    no_amb  = args.no_ambiguous or cfg.generator.no_ambiguous
+    no_amb = args.no_ambiguous or cfg.generator.no_ambiguous
 
     try:
         pwd = generate(
@@ -601,6 +578,275 @@ def cmd_config(args, cfg: CagouleConfig) -> int:
     return 0
 
 
+# ─── Nouvelles commandes v1.5 ────────────────────────────────────────────────
+
+def cmd_totp_add(args, cfg: CagouleConfig) -> int:
+    """Ajoute une configuration TOTP à une entrée existante."""
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    vault, password = _open_vault(vault_dir)
+
+    try:
+        entry = vault.get(args.service)
+    except EntryNotFoundError as e:
+        _err(str(e))
+        return 1
+
+    from .totp import TOTPEntry
+
+    secret = args.secret.upper().replace(" ", "").replace("-", "")
+    issuer = args.issuer or entry.service
+    account = args.account or entry.username or args.service
+
+    totp = TOTPEntry(
+        issuer=issuer,
+        account=account,
+        secret=secret,
+        digits=args.digits,
+        period=args.period,
+        algorithm=args.algorithm,
+    )
+
+    entry.update(totp=totp.to_dict())
+    vault.save(password)
+
+    _ok(f"TOTP ajouté à '{args.service}'")
+    _info(f"Issuer: {issuer}")
+    _info(f"Account: {account}")
+    return 0
+
+
+def cmd_totp_show(args, cfg: CagouleConfig) -> int:
+    """Affiche le code TOTP actuel pour un service."""
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    vault, _ = _open_vault(vault_dir)
+
+    try:
+        entry = vault.get(args.service)
+    except EntryNotFoundError as e:
+        _err(str(e))
+        return 1
+
+    if not entry.has_totp:
+        _err(f"Aucune configuration TOTP pour '{args.service}'.")
+        _info("Ajoutez-en une avec : cagoule-pass totp add")
+        return 1
+
+    from .totp import generate_code, time_remaining
+
+    code = generate_code(entry.totp_entry)
+    remaining = time_remaining(entry.totp_entry)
+
+    print()
+    _sep()
+    print(f"  🔐 TOTP pour {args.service}")
+    _sep("·")
+    print(f"  Code     : {code[:3]} {code[3:]}")
+    print(f"  Expire dans : {remaining} secondes")
+    _sep()
+    return 0
+
+
+def cmd_totp_qr(args, cfg: CagouleConfig) -> int:
+    """Génère un QR code pour le TOTP."""
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    vault, _ = _open_vault(vault_dir)
+
+    try:
+        entry = vault.get(args.service)
+    except EntryNotFoundError as e:
+        _err(str(e))
+        return 1
+
+    if not entry.has_totp:
+        _err(f"Aucune configuration TOTP pour '{args.service}'.")
+        return 1
+
+    uri = entry.totp_entry.to_uri()
+    print()
+    _sep()
+    print(f"  📱 QR Code pour {args.service}")
+    _sep("·")
+    print(f"  URI: {uri}")
+    print()
+
+    try:
+        import segno
+        qr = segno.make(uri)
+        print(qr.to_str())
+        _ok("QR code affiché ci-dessus.")
+    except ImportError:
+        _info("Installez 'segno' pour afficher le QR code : pip install segno")
+        _info(f"Vous pouvez aussi utiliser : {uri}")
+
+    _sep()
+    return 0
+
+
+def cmd_ssh_add(args, cfg: CagouleConfig) -> int:
+    """Ajoute une clé SSH à une entrée existante."""
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    vault, password = _open_vault(vault_dir)
+
+    try:
+        entry = vault.get(args.name)
+    except EntryNotFoundError as e:
+        _err(str(e))
+        return 1
+
+    from .ssh import SSHKeyPair
+
+    if args.generate:
+        pair = SSHKeyPair.generate(
+            algorithm=args.algo,
+            comment=args.comment or f"{args.name}@cagoule-pass"
+        )
+        _ok(f"Clé SSH {args.algo} générée")
+    elif args.key:
+        pair = SSHKeyPair.from_file(args.key, comment=args.comment)
+        _ok(f"Clé SSH importée depuis {args.key}")
+    else:
+        _err("Spécifiez --generate ou --key")
+        return 1
+
+    entry.update(ssh_key=pair.to_dict())
+    vault.save(password)
+
+    _ok(f"Clé SSH ajoutée à '{args.name}'")
+    _info(f"Empreinte : {pair.fingerprint}")
+    return 0
+
+
+def cmd_ssh_export(args, cfg: CagouleConfig) -> int:
+    """Exporte une clé SSH vers le système de fichiers."""
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    vault, _ = _open_vault(vault_dir)
+
+    try:
+        entry = vault.get(args.name)
+    except EntryNotFoundError as e:
+        _err(str(e))
+        return 1
+
+    if not entry.has_ssh_key:
+        _err(f"Aucune clé SSH pour '{args.name}'.")
+        return 1
+
+    priv, pub = entry.ssh_key_pair.export_to_files(
+        output_dir=args.output_dir or "~/.ssh",
+        overwrite=args.force,
+    )
+    _ok(f"Clé privée : {priv}")
+    _ok(f"Clé publique : {pub}")
+    return 0
+
+
+def cmd_ssh_list(args, cfg: CagouleConfig) -> int:
+    """Liste toutes les entrées avec clés SSH."""
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    vault, _ = _open_vault(vault_dir)
+
+    entries = [e for e in vault.list_all() if e.has_ssh_key]
+
+    if not entries:
+        _info("Aucune clé SSH dans le coffre.")
+        return 0
+
+    print()
+    _sep()
+    print("  🔑 Clés SSH dans le coffre")
+    _sep("·")
+    for e in entries:
+        k = e.ssh_key_pair
+        print(f"  {e.service:<20} {k.algorithm:<12} {k.fingerprint[:30]}...")
+    _sep()
+    print(f"  {len(entries)} clé(s)")
+    return 0
+
+
+def cmd_ssh_show(args, cfg: CagouleConfig) -> int:
+    """Affiche les détails d'une clé SSH."""
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    vault, _ = _open_vault(vault_dir)
+
+    try:
+        entry = vault.get(args.name)
+    except EntryNotFoundError as e:
+        _err(str(e))
+        return 1
+
+    if not entry.has_ssh_key:
+        _err(f"Aucune clé SSH pour '{args.name}'.")
+        return 1
+
+    print()
+    _sep()
+    print(f"  🔑 Clé SSH : {args.name}")
+    _sep("·")
+    print(entry.ssh_key_pair.display(show_private=args.show_private))
+    _sep()
+    return 0
+
+
+def cmd_ssh_add_to_agent(args, cfg: CagouleConfig) -> int:
+    """Ajoute une clé SSH à l'agent SSH."""
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    vault, _ = _open_vault(vault_dir)
+
+    try:
+        entry = vault.get(args.name)
+    except EntryNotFoundError as e:
+        _err(str(e))
+        return 1
+
+    if not entry.has_ssh_key:
+        _err(f"Aucune clé SSH pour '{args.name}'.")
+        return 1
+
+    import subprocess
+    proc = subprocess.Popen(
+        ["ssh-add", "-"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    proc.communicate(entry.ssh_key_pair.private_key_pem.encode())
+    if proc.returncode == 0:
+        _ok(f"Clé SSH ajoutée à l'agent")
+    else:
+        _err("Impossible d'ajouter la clé à l'agent")
+        return 1
+    return 0
+
+
+def cmd_ssh_remove_from_agent(args, cfg: CagouleConfig) -> int:
+    """Supprime une clé SSH de l'agent."""
+    import subprocess
+    proc = subprocess.run(
+        ["ssh-add", "-d", args.fingerprint],
+        capture_output=True,
+    )
+    if proc.returncode == 0:
+        _ok(f"Clé SSH supprimée de l'agent")
+    else:
+        _err("Impossible de supprimer la clé de l'agent")
+        return 1
+    return 0
+
+
+def cmd_tui(args, cfg: CagouleConfig) -> int:
+    """Lance l'interface TUI."""
+    try:
+        from .tui import launch_tui
+    except ImportError as e:
+        _err("Impossible de charger l'interface TUI.")
+        _info("Installez textual : pip install textual")
+        return 1
+
+    vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
+    launch_tui(vault_dir)
+    return 0
+
+
 # ─── Parser ───────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -612,24 +858,21 @@ def build_parser() -> argparse.ArgumentParser:
             "Exemples :\n"
             "  cagoule-pass init\n"
             "  cagoule-pass add github -u monuser --generate\n"
-            "  cagoule-pass get github --show\n"
-            "  cagoule-pass copy github\n"
-            "  cagoule-pass list\n"
-            "  cagoule-pass generate --length 20 --symbols --copy\n"
+            "  cagoule-pass totp add github --secret JBSWY3DP...\n"
+            "  cagoule-pass ssh add work --generate --algo Ed25519\n"
+            "  cagoule-pass tui\n"
         ),
     )
 
-    # ── Option --version (feature v1.2) ───────────────────────────────────────
     parser.add_argument(
         "--version", "-V",
         action="version",
         version=f"%(prog)s {__version__}",
         help="Afficher la version et quitter"
     )
-
     parser.add_argument(
         "--dir", metavar="DOSSIER",
-        help=f"Dossier du coffre (défaut depuis config TOML ou {DEFAULT_VAULT_DIR})"
+        help="Dossier du coffre (défaut depuis config TOML)"
     )
     parser.add_argument(
         "--config", metavar="FICHIER",
@@ -638,119 +881,173 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # ── init ──────────────────────────────────────────────────────────────────
+    # ── Commandes existantes ─────────────────────────────────────────────────
     sub.add_parser("init", help="Créer un nouveau coffre chiffré")
+    sub.add_parser("get", help="Afficher une entrée")
+    sub.add_parser("list", help="Lister les entrées")
+    sub.add_parser("search", help="Rechercher des entrées")
+    sub.add_parser("passwd", help="Changer le mot de passe maître")
+    sub.add_parser("info", help="Informations sur le coffre")
+    sub.add_parser("config", help="Afficher la configuration active")
 
-    # ── add ───────────────────────────────────────────────────────────────────
+    # add
     p_add = sub.add_parser("add", help="Ajouter une entrée")
-    p_add.add_argument("service", help="Nom du service (ex: github)")
-    p_add.add_argument("-u", "--username", default="", help="Identifiant")
-    p_add.add_argument("-p", "--password", default="", help="Mot de passe (déconseillé en CLI)")
-    p_add.add_argument("--url",   default="", help="URL associée")
-    p_add.add_argument("--notes", default="", help="Notes libres")
-    p_add.add_argument("--tags",  default="", help="Tags séparés par virgule")
-    p_add.add_argument("-g", "--generate", action="store_true", help="Générer le mot de passe")
-    p_add.add_argument("-l", "--length", type=int, default=16, help="Longueur (avec --generate)")
-    p_add.add_argument("--symbols",      action="store_true",  help="Inclure les symboles")
-    p_add.add_argument("--no-upper",     action="store_true",  help="Sans majuscules")
-    p_add.add_argument("--no-digits",    action="store_true",  help="Sans chiffres")
-    p_add.add_argument("--no-ambiguous", action="store_true",  help="Sans caractères ambigus")
+    p_add.add_argument("service", help="Nom du service")
+    p_add.add_argument("-u", "--username", default="")
+    p_add.add_argument("-p", "--password", default="")
+    p_add.add_argument("--url", default="")
+    p_add.add_argument("--notes", default="")
+    p_add.add_argument("--tags", default="")
+    p_add.add_argument("-g", "--generate", action="store_true")
+    p_add.add_argument("-l", "--length", type=int, default=16)
+    p_add.add_argument("--symbols", action="store_true")
+    p_add.add_argument("--no-upper", action="store_true")
+    p_add.add_argument("--no-digits", action="store_true")
+    p_add.add_argument("--no-ambiguous", action="store_true")
 
-    # ── get ───────────────────────────────────────────────────────────────────
-    p_get = sub.add_parser("get", help="Afficher une entrée")
-    p_get.add_argument("service", help="Nom du service")
-    p_get.add_argument("--show", action="store_true", help="Afficher le mot de passe en clair")
-
-    # ── copy ──────────────────────────────────────────────────────────────────
-    p_copy = sub.add_parser("copy", help="Copier le mot de passe dans le presse-papier")
+    # copy
+    p_copy = sub.add_parser("copy", help="Copier dans le presse-papier")
     p_copy.add_argument("service", help="Nom du service")
-    p_copy.add_argument("--username", action="store_true", help="Copier l'username au lieu du mot de passe")
-    p_copy.add_argument("--no-clear", action="store_true", help="Ne pas effacer le presse-papier automatiquement")
+    p_copy.add_argument("--username", action="store_true")
+    p_copy.add_argument("--no-clear", action="store_true")
 
-    # ── list ──────────────────────────────────────────────────────────────────
-    p_list = sub.add_parser("list", help="Lister les entrées")
-    p_list.add_argument("--tag", help="Filtrer par tag")
-
-    # ── search ────────────────────────────────────────────────────────────────
-    p_search = sub.add_parser("search", help="Rechercher des entrées")
-    p_search.add_argument("query", help="Terme de recherche")
-
-    # ── edit ──────────────────────────────────────────────────────────────────
-    p_edit = sub.add_parser("edit", help="Modifier une entrée existante")
+    # edit
+    p_edit = sub.add_parser("edit", help="Modifier une entrée")
     p_edit.add_argument("service", help="Nom du service")
     p_edit.add_argument("-u", "--username", default=None)
     p_edit.add_argument("-p", "--password", default="")
-    p_edit.add_argument("--url",   default=None)
+    p_edit.add_argument("--url", default=None)
     p_edit.add_argument("--notes", default=None)
     p_edit.add_argument("-g", "--generate", action="store_true")
     p_edit.add_argument("-l", "--length", type=int, default=16)
     p_edit.add_argument("--symbols", action="store_true")
 
-    # ── remove ────────────────────────────────────────────────────────────────
-    p_rm = sub.add_parser("remove", help="Supprimer une entrée", aliases=["rm", "delete"])
+    # remove
+    p_rm = sub.add_parser("remove", aliases=["rm", "delete"], help="Supprimer une entrée")
     p_rm.add_argument("service", help="Nom du service")
-    p_rm.add_argument("-y", "--yes", action="store_true", help="Ne pas demander confirmation")
+    p_rm.add_argument("-y", "--yes", action="store_true")
 
-    # ── generate ──────────────────────────────────────────────────────────────
-    p_gen = sub.add_parser("generate", help="Générer un mot de passe sécurisé", aliases=["gen"])
-    p_gen.add_argument("-l", "--length",       type=int, default=16)
-    p_gen.add_argument("-s", "--symbols",      action="store_true")
-    p_gen.add_argument("--no-upper",           action="store_true")
-    p_gen.add_argument("--no-digits",          action="store_true")
-    p_gen.add_argument("--no-ambiguous",       action="store_true")
-    p_gen.add_argument("-c", "--copy",         action="store_true", help="Copier dans le presse-papier")
-    p_gen.add_argument("--no-clear",           action="store_true", help="Ne pas effacer le presse-papier auto")
+    # generate
+    p_gen = sub.add_parser("generate", aliases=["gen"], help="Générer un mot de passe")
+    p_gen.add_argument("-l", "--length", type=int, default=16)
+    p_gen.add_argument("-s", "--symbols", action="store_true")
+    p_gen.add_argument("--no-upper", action="store_true")
+    p_gen.add_argument("--no-digits", action="store_true")
+    p_gen.add_argument("--no-ambiguous", action="store_true")
+    p_gen.add_argument("-c", "--copy", action="store_true")
+    p_gen.add_argument("--no-clear", action="store_true")
 
-    # ── passwd ────────────────────────────────────────────────────────────────
-    sub.add_parser("passwd", help="Changer le mot de passe maître")
+    # export
+    p_exp = sub.add_parser("export", help="Exporter en JSON")
+    p_exp.add_argument("output", help="Fichier de sortie")
+    p_exp.add_argument("-f", "--force", action="store_true")
+    p_exp.add_argument("--no-passwords", action="store_true")
+    p_exp.add_argument("--no-warning", action="store_true")
 
-    # ── export ────────────────────────────────────────────────────────────────
-    p_exp = sub.add_parser("export", help="Exporter le coffre en JSON")
-    p_exp.add_argument("output", help="Fichier de sortie (.json)")
-    p_exp.add_argument("-f", "--force",        action="store_true", help="Écraser si existant")
-    p_exp.add_argument("--no-passwords",       action="store_true", help="Exclure les mots de passe")
-    p_exp.add_argument("--no-warning",         action="store_true")
+    # import
+    p_imp = sub.add_parser("import", help="Importer depuis JSON")
+    p_imp.add_argument("input", help="Fichier source")
+    p_imp.add_argument("--overwrite", action="store_true")
 
-    # ── import ────────────────────────────────────────────────────────────────
-    p_imp = sub.add_parser("import", help="Importer depuis un JSON")
-    p_imp.add_argument("input", help="Fichier source (.json)")
-    p_imp.add_argument("--overwrite", action="store_true", help="Écraser les entrées existantes")
+    # ── Nouvelles commandes TOTP ─────────────────────────────────────────────
+    p_totp_add = sub.add_parser("totp", help="Gestion TOTP (2FA)")
+    totp_sub = p_totp_add.add_subparsers(dest="totp_cmd", required=True)
 
-    # ── info ──────────────────────────────────────────────────────────────────
-    sub.add_parser("info", help="Informations sur le coffre")
+    p_totp_add_cmd = totp_sub.add_parser("add", help="Ajouter TOTP")
+    p_totp_add_cmd.add_argument("service", help="Nom du service")
+    p_totp_add_cmd.add_argument("--secret", required=True, help="Secret Base32")
+    p_totp_add_cmd.add_argument("--issuer", default="", help="Nom du service (issuer)")
+    p_totp_add_cmd.add_argument("--account", default="", help="Nom du compte")
+    p_totp_add_cmd.add_argument("--digits", type=int, default=6, choices=[6, 8])
+    p_totp_add_cmd.add_argument("--period", type=int, default=30, choices=[30, 60])
+    p_totp_add_cmd.add_argument("--algorithm", default="SHA1", choices=["SHA1", "SHA256", "SHA512"])
 
-    # ── config ────────────────────────────────────────────────────────────────
-    sub.add_parser("config", help="Afficher la configuration active")
+    totp_sub.add_parser("show", help="Afficher le code TOTP").add_argument("service", help="Nom du service")
+    totp_sub.add_parser("qr", help="Générer QR code").add_argument("service", help="Nom du service")
+
+    # ── Nouvelles commandes SSH ──────────────────────────────────────────────
+    p_ssh = sub.add_parser("ssh", help="Gestion des clés SSH")
+    ssh_sub = p_ssh.add_subparsers(dest="ssh_cmd", required=True)
+
+    p_ssh_add = ssh_sub.add_parser("add", help="Ajouter une clé SSH")
+    p_ssh_add.add_argument("name", help="Nom de la clé")
+    p_ssh_add.add_argument("--generate", action="store_true", help="Générer une nouvelle clé")
+    p_ssh_add.add_argument("--algo", default="Ed25519", choices=["Ed25519", "RSA-4096", "RSA-2048"])
+    p_ssh_add.add_argument("--key", help="Chemin vers une clé privée existante")
+    p_ssh_add.add_argument("--comment", default="", help="Commentaire")
+
+    p_ssh_export = ssh_sub.add_parser("export", help="Exporter une clé SSH")
+    p_ssh_export.add_argument("name", help="Nom de la clé")
+    p_ssh_export.add_argument("--output-dir", default="~/.ssh", help="Dossier de destination")
+    p_ssh_export.add_argument("--force", action="store_true", help="Écraser si existant")
+
+    ssh_sub.add_parser("list", help="Lister les clés SSH")
+    p_ssh_show = ssh_sub.add_parser("show", help="Afficher les détails d'une clé")
+    p_ssh_show.add_argument("name", help="Nom de la clé")
+    p_ssh_show.add_argument("--show-private", action="store_true", help="Afficher la clé privée")
+
+    p_ssh_agent = ssh_sub.add_parser("add-to-agent", help="Ajouter à ssh-agent")
+    p_ssh_agent.add_argument("name", help="Nom de la clé")
+
+    p_ssh_rm_agent = ssh_sub.add_parser("remove-from-agent", help="Supprimer de ssh-agent")
+    p_ssh_rm_agent.add_argument("fingerprint", help="Empreinte de la clé")
+
+    # ── Commande TUI ─────────────────────────────────────────────────────────
+    sub.add_parser("tui", help="Lancer l'interface textuelle (TUI)")
 
     return parser
 
 
 def main(argv: Optional[list] = None) -> int:
     parser = build_parser()
-    args   = parser.parse_args(argv)
+    args = parser.parse_args(argv)
 
-    # ── Chargement de la configuration TOML (feature v1.2) ───────────────────
     config_path = Path(args.config) if getattr(args, "config", None) else None
     cfg = CagouleConfig.load(config_path)
 
+    # Dispatch des commandes
+    if args.command == "totp":
+        if args.totp_cmd == "add":
+            return cmd_totp_add(args, cfg)
+        elif args.totp_cmd == "show":
+            return cmd_totp_show(args, cfg)
+        elif args.totp_cmd == "qr":
+            return cmd_totp_qr(args, cfg)
+    elif args.command == "ssh":
+        if args.ssh_cmd == "add":
+            return cmd_ssh_add(args, cfg)
+        elif args.ssh_cmd == "export":
+            return cmd_ssh_export(args, cfg)
+        elif args.ssh_cmd == "list":
+            return cmd_ssh_list(args, cfg)
+        elif args.ssh_cmd == "show":
+            return cmd_ssh_show(args, cfg)
+        elif args.ssh_cmd == "add-to-agent":
+            return cmd_ssh_add_to_agent(args, cfg)
+        elif args.ssh_cmd == "remove-from-agent":
+            return cmd_ssh_remove_from_agent(args, cfg)
+    elif args.command == "tui":
+        return cmd_tui(args, cfg)
+
+    # Commandes existantes
     dispatch = {
-        "init":     cmd_init,
-        "add":      cmd_add,
-        "get":      cmd_get,
-        "copy":     cmd_copy,
-        "list":     cmd_list,
-        "search":   cmd_search,
-        "edit":     cmd_edit,
-        "remove":   cmd_remove,
-        "rm":       cmd_remove,
-        "delete":   cmd_remove,
+        "init": cmd_init,
+        "add": cmd_add,
+        "get": cmd_get,
+        "copy": cmd_copy,
+        "list": cmd_list,
+        "search": cmd_search,
+        "edit": cmd_edit,
+        "remove": cmd_remove,
+        "rm": cmd_remove,
+        "delete": cmd_remove,
         "generate": cmd_generate,
-        "gen":      cmd_generate,
-        "passwd":   cmd_passwd,
-        "export":   cmd_export,
-        "import":   cmd_import,
-        "info":     cmd_info,
-        "config":   cmd_config,
+        "gen": cmd_generate,
+        "passwd": cmd_passwd,
+        "export": cmd_export,
+        "import": cmd_import,
+        "info": cmd_info,
+        "config": cmd_config,
     }
 
     try:
@@ -760,8 +1057,8 @@ def main(argv: Optional[list] = None) -> int:
         return 130
     except Exception as e:
         _err(f"Erreur inattendue : {e}")
-        import traceback
         if os.environ.get("CAGOULE_DEBUG"):
+            import traceback
             traceback.print_exc()
         return 1
 
