@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cagoule-pass"
-version = "1.5.1"
+version = "1.5.2"
 description = "Gestionnaire de mots de passe chiffré avec CAGOULE (TOTP, SSH, TUI)"
 readme = "README.md"
 license = "MIT"
@@ -57,10 +57,20 @@ Homepage = "https://github.com/slimissa/CAGOULE"
 Repository = "https://github.com/slimissa/cagoule-pass"
 
 [tool.setuptools]
-packages = ["cagoule_pass"]
+packages = [
+    "cagoule_pass",
+    "cagoule_pass.tui",
+    "cagoule_pass.tui.screens",
+    "cagoule_pass.tui.widgets"
+]
 
 [tool.setuptools.package-data]
-cagoule_pass = ["py.typed", "tui/*.tcss"]
+cagoule_pass = [
+    "py.typed",
+    "tui/*.tcss",
+    "tui/screens/*.py",
+    "tui/widgets/*.py"
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

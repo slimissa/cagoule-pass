@@ -269,13 +269,16 @@ def cmd_copy(args, cfg: CagouleConfig) -> int:
 
 
 def cmd_list(args, cfg: CagouleConfig) -> int:
+    tag = getattr(args, "tag", None)
     vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
     vault, _ = _open_vault(vault_dir)
 
-    entries = vault.list_all(tag=args.tag)
+    # Récupérer le tag depuis args (peut ne pas exister dans les versions anciennes)
+    tag = getattr(args, 'tag', None)
+    entries = vault.list_all(tag=tag)
 
     if not entries:
-        _info("Le coffre est vide." if not args.tag else f"Aucune entrée avec le tag '{args.tag}'.")
+        _info("Le coffre est vide." if not tag else f"Aucune entrée avec le tag '{tag}'.")
         return 0
 
     print()
@@ -287,7 +290,6 @@ def cmd_list(args, cfg: CagouleConfig) -> int:
     _sep()
     print(f"  {len(entries)} entrée(s)")
     return 0
-
 
 def cmd_search(args, cfg: CagouleConfig) -> int:
     vault_dir = Path(args.dir) if args.dir else cfg.vault.vault_dir
